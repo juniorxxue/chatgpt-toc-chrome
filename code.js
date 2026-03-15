@@ -10,6 +10,8 @@ const CONSTANTS = {
   IDS: {
     TOC_CONTAINER: "chatgpt-toc-extension",
     TOC_CONTENT: "chatgpt-toc-content",
+    TOC_PIN_BTN: "toc-pin-btn",
+    TOC_SEARCH_TOGGLE_BTN: "toc-search-toggle-btn",
     TOC_TOGGLE_BTN: "toc-toggle-btn",
     SEARCH_INPUT: "toc-search-input",
     SEARCH_CLEAR: "toc-search-clear",
@@ -28,6 +30,7 @@ const CONSTANTS = {
     HEARTBEAT: 5000,
     PROMPT_SUBMISSION: 150,
     ENTER_KEY: 120,
+    HOVER_COLLAPSE: 180,
     HIGHLIGHT: 1800,
   },
   CONSTRAINTS: {
@@ -36,6 +39,7 @@ const CONSTANTS = {
   },
   STORAGE_KEY_POSITION: "chatgpt-toc-position",
   STORAGE_KEY_CUSTOM_NAMES: "chatgpt-toc-custom-names",
+  STORAGE_KEY_PINNED: "chatgpt-toc-pinned",
 };
 
 const ICONS = {
@@ -60,6 +64,28 @@ const ICONS = {
   EDIT: `
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+    </svg>
+  `,
+  PIN: `
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M15 4.5L19.5 9l-3 1.5v4.5l-1.5 1.5-3-4.5-3 3-.75-.75 3-3-4.5-3L8.25 6h4.5L15 4.5z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  `,
+  SEARCH: `
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="11" cy="11" r="6.5" stroke="currentColor" stroke-width="2"/>
+      <path d="M16 16L21 21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </svg>
+  `,
+  PLUS: `
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M12 5V19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      <path d="M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    </svg>
+  `,
+  MINUS: `
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
     </svg>
   `,
 };
@@ -157,9 +183,12 @@ class PositionManager {
 }
 
 class DragManager {
-  constructor(element, positionManager) {
+  constructor(element, positionManager, options = {}) {
     this.element = element;
     this.positionManager = positionManager;
+    this.onCollapseChange = options.onCollapseChange || null;
+    this.onDragEnd = options.onDragEnd || null;
+    this.onToggleButtonPress = options.onToggleButtonPress || null;
     this.isDragging = false;
     this.hasMoved = false;
     this.isClickOnToggle = false;
@@ -197,6 +226,11 @@ class DragManager {
     }
 
     if (isToggleButton) {
+      const shouldContinue = this.onToggleButtonPress?.(isCollapsed);
+      if (shouldContinue === false) {
+        return;
+      }
+
       if (!isCollapsed) {
         event.preventDefault();
         event.stopPropagation();
@@ -270,6 +304,15 @@ class DragManager {
     this.positionManager.savePosition(rect.left, rect.top);
 
     if (!this.hasMoved && this.isClickOnToggle) {
+      const shouldContinue = this.onToggleButtonPress?.(true);
+      if (shouldContinue === false) {
+        this.removeDragStyles();
+        document.removeEventListener("mousemove", this.boundDrag);
+        document.removeEventListener("mouseup", this.boundStopDrag);
+        document.body.style.userSelect = "";
+        return;
+      }
+
       this.toggleCollapse(true);
     }
 
@@ -277,6 +320,7 @@ class DragManager {
     document.removeEventListener("mousemove", this.boundDrag);
     document.removeEventListener("mouseup", this.boundStopDrag);
     document.body.style.userSelect = "";
+    this.onDragEnd?.();
   }
 
   toggleCollapse(isExpanding) {
@@ -303,6 +347,7 @@ class DragManager {
         buttonRect.top,
       );
       this.positionManager.savePosition(buttonRect.left, buttonRect.top);
+      this.onCollapseChange?.(true);
       return;
     }
 
@@ -326,6 +371,7 @@ class DragManager {
       constrained.y,
     );
     this.positionManager.savePosition(constrained.x, constrained.y);
+    this.onCollapseChange?.(false);
   }
 
   applyDragStyles() {
@@ -358,38 +404,40 @@ class DOMManager {
     headerContent.className = CONSTANTS.CLASSES.TOC_HEADER_CONTENT;
 
     const title = document.createElement("h2");
-    title.textContent = "Answer TOC";
-
-    const subtitle = document.createElement("span");
-    subtitle.className = "toc-subtitle";
-    subtitle.textContent = "Prompts and answer headings";
-
-    const titleStack = document.createElement("div");
-    titleStack.className = "toc-title-stack";
-    titleStack.appendChild(title);
-    titleStack.appendChild(subtitle);
+    title.textContent = "TOC";
 
     const headerActions = document.createElement("div");
     headerActions.className = "toc-header-actions";
 
-    const expandAllButton = document.createElement("button");
-    expandAllButton.type = "button";
-    expandAllButton.className = "toc-bulk-button";
-    expandAllButton.dataset.action = "expand-all";
-    expandAllButton.title = "Expand all prompts and headings";
-    expandAllButton.setAttribute(
-      "aria-label",
-      "Expand all prompts and headings",
+    const searchButton = DOMManager.createActionButton(
+      "toc-icon-button toc-search-toggle-btn",
+      "Toggle search",
+      ICONS.SEARCH,
     );
-    expandAllButton.textContent = "Expand all";
+    searchButton.id = CONSTANTS.IDS.TOC_SEARCH_TOGGLE_BTN;
+    searchButton.dataset.action = "toggle-search";
 
-    const collapseAllButton = document.createElement("button");
-    collapseAllButton.type = "button";
-    collapseAllButton.className = "toc-bulk-button";
+    const expandAllButton = DOMManager.createActionButton(
+      "toc-icon-button toc-bulk-button",
+      "Expand all prompts and headings",
+      ICONS.PLUS,
+    );
+    expandAllButton.dataset.action = "expand-all";
+
+    const collapseAllButton = DOMManager.createActionButton(
+      "toc-icon-button toc-bulk-button",
+      "Collapse all prompts",
+      ICONS.MINUS,
+    );
     collapseAllButton.dataset.action = "collapse-all";
-    collapseAllButton.title = "Collapse all prompts";
-    collapseAllButton.setAttribute("aria-label", "Collapse all prompts");
-    collapseAllButton.textContent = "Collapse all";
+
+    const pinButton = DOMManager.createActionButton(
+      "toc-icon-button toc-pin-btn",
+      "Pin open panel",
+      ICONS.PIN,
+    );
+    pinButton.id = CONSTANTS.IDS.TOC_PIN_BTN;
+    pinButton.dataset.action = "toggle-pin";
 
     const toggleButton = document.createElement("button");
     toggleButton.id = CONSTANTS.IDS.TOC_TOGGLE_BTN;
@@ -398,9 +446,11 @@ class DOMManager {
     toggleButton.setAttribute("aria-label", "Collapse table of contents");
     toggleButton.innerHTML = ICONS.TOGGLE;
 
-    headerContent.appendChild(titleStack);
+    headerContent.appendChild(title);
+    headerActions.appendChild(searchButton);
     headerActions.appendChild(expandAllButton);
     headerActions.appendChild(collapseAllButton);
+    headerActions.appendChild(pinButton);
     headerActions.appendChild(toggleButton);
     header.appendChild(headerContent);
     header.appendChild(headerActions);
@@ -415,7 +465,7 @@ class DOMManager {
     const input = document.createElement("input");
     input.type = "text";
     input.id = CONSTANTS.IDS.SEARCH_INPUT;
-    input.placeholder = "Search prompts or headings...";
+    input.placeholder = "Search...";
     input.autocomplete = "off";
 
     const clearButton = document.createElement("button");
@@ -615,6 +665,7 @@ class ConversationExtractor {
 class TOCExtension {
   constructor() {
     this.container = null;
+    this.searchContainer = null;
     this.contentContainer = null;
     this.searchInput = null;
     this.searchClear = null;
@@ -625,6 +676,7 @@ class TOCExtension {
     this.lastChatId = null;
     this.lastUrl = window.location.href;
     this.refreshTimer = null;
+    this.autoCollapseTimer = null;
     this.highlightTimer = null;
     this.highlightedElement = null;
     this.collapsedGroups = new Set();
@@ -632,10 +684,14 @@ class TOCExtension {
     this.expandedHeadings = new Set();
     this.editingGroupIndex = null;
     this.focusEditOnRender = false;
+    this.isPinned = this.getPinnedState();
+    this.isSearchOpen = false;
 
     this.boundHandleSearchInput = this.handleSearchInput.bind(this);
     this.boundClearSearch = this.clearSearch.bind(this);
     this.boundHandleContentClick = this.handleContentClick.bind(this);
+    this.boundHandleMouseEnter = this.handleMouseEnter.bind(this);
+    this.boundHandleMouseLeave = this.handleMouseLeave.bind(this);
 
     this.init();
   }
@@ -780,6 +836,7 @@ class TOCExtension {
   ensureContainer() {
     if (this.container && !document.body.contains(this.container)) {
       this.container = null;
+      this.searchContainer = null;
       this.contentContainer = null;
       this.searchInput = null;
       this.searchClear = null;
@@ -803,10 +860,12 @@ class TOCExtension {
     container.appendChild(header);
     container.appendChild(searchContainer);
     container.appendChild(content);
+    container.style.visibility = "hidden";
 
     document.body.appendChild(container);
 
     this.container = container;
+    this.searchContainer = searchContainer;
     this.contentContainer = content;
     this.searchInput = container.querySelector(`#${CONSTANTS.IDS.SEARCH_INPUT}`);
     this.searchClear = container.querySelector(`#${CONSTANTS.IDS.SEARCH_CLEAR}`);
@@ -814,13 +873,23 @@ class TOCExtension {
     this.searchInput.addEventListener("input", this.boundHandleSearchInput);
     this.searchClear.addEventListener("click", this.boundClearSearch);
     this.container.addEventListener("click", this.boundHandleContentClick);
+    this.container.addEventListener("mouseenter", this.boundHandleMouseEnter);
+    this.container.addEventListener("mouseleave", this.boundHandleMouseLeave);
 
-    this.dragManager = new DragManager(container, PositionManager);
+    this.dragManager = new DragManager(container, PositionManager, {
+      onCollapseChange: this.handlePanelCollapseChange.bind(this),
+      onDragEnd: this.handleDragEnd.bind(this),
+      onToggleButtonPress: this.handleToggleButtonPress.bind(this),
+    });
     this.applyInitialPosition();
     this.setupResponsiveCollapse();
+    this.updateHeaderActions();
+    this.container.style.visibility = "";
   }
 
   removeTOC() {
+    window.clearTimeout(this.autoCollapseTimer);
+
     if (this.highlightedElement) {
       this.highlightedElement.classList.remove(
         CONSTANTS.CLASSES.TARGET_HIGHLIGHT,
@@ -830,6 +899,7 @@ class TOCExtension {
 
     this.container?.remove();
     this.container = null;
+    this.searchContainer = null;
     this.contentContainer = null;
     this.searchInput = null;
     this.searchClear = null;
@@ -911,11 +981,6 @@ class TOCExtension {
   }
 
   getDisplayName(group) {
-    const customName = CustomNameManager.getName(this.lastChatId, group.promptText);
-    if (customName) {
-      return customName;
-    }
-
     if (group.promptElement) {
       return group.promptText;
     }
@@ -940,83 +1005,21 @@ class TOCExtension {
     const header = document.createElement("div");
     header.className = "toc-group-header";
 
-    const info = document.createElement("div");
-    info.className = "toc-group-info";
-
-    const meta = document.createElement("div");
-    meta.className = "toc-group-meta";
-
-    const indexChip = document.createElement("span");
-    indexChip.className = "toc-group-index";
-    indexChip.textContent = group.promptElement
-      ? `Prompt ${group.promptNumber}`
-      : "Answer";
-
-    const countChip = document.createElement("span");
-    countChip.className = "toc-group-count";
-    countChip.textContent = this.getCountLabel(group);
-
-    meta.appendChild(indexChip);
-    meta.appendChild(countChip);
-    info.appendChild(meta);
-
-    if (this.editingGroupIndex === group.index) {
-      const input = document.createElement("input");
-      input.type = "text";
-      input.className = "toc-group-edit-input";
-      input.value = group.displayName;
-      input.placeholder = "Rename prompt";
-      input.dataset.groupIndex = String(group.index);
-
-      let isClosing = false;
-      const saveAndExit = () => {
-        if (isClosing) return;
-        isClosing = true;
-        CustomNameManager.saveName(
-          this.lastChatId,
-          group.promptText,
-          input.value.trim(),
-        );
-        this.editingGroupIndex = null;
-        this.render();
-      };
-
-      input.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") {
-          saveAndExit();
-        }
-
-        if (event.key === "Escape") {
-          isClosing = true;
-          this.editingGroupIndex = null;
-          this.render();
-        }
-      });
-
-      input.addEventListener("blur", saveAndExit);
-      info.appendChild(input);
-    } else {
-      const titleButton = document.createElement("button");
-      titleButton.type = "button";
-      titleButton.className = "toc-group-jump";
-      titleButton.dataset.action = "scroll-group";
-      titleButton.dataset.groupIndex = String(group.index);
-      titleButton.title = group.displayName;
-      titleButton.textContent = group.displayName;
-      info.appendChild(titleButton);
-    }
+    const info = document.createElement("button");
+    info.type = "button";
+    info.className = "toc-group-jump";
+    info.dataset.action = "scroll-group";
+    info.dataset.groupIndex = String(group.index);
+    info.title = group.displayName;
+    info.textContent = group.displayName;
 
     const actions = document.createElement("div");
     actions.className = "toc-group-actions";
 
-    const editButton = DOMManager.createActionButton(
-      "toc-icon-button toc-edit-btn",
-      "Rename prompt",
-      ICONS.EDIT,
-    );
-    editButton.dataset.action = "edit-group";
-    editButton.dataset.groupIndex = String(group.index);
-    actions.appendChild(editButton);
+    const countChip = document.createElement("span");
+    countChip.className = "toc-group-count";
+    countChip.textContent = this.getCountLabel(group);
+    actions.appendChild(countChip);
 
     if (hasContent) {
       const collapseButton = DOMManager.createActionButton(
@@ -1148,10 +1151,12 @@ class TOCExtension {
   }
 
   updateSearchControls() {
-    if (!this.searchClear) {
+    if (!this.searchClear || !this.searchContainer || !this.container) {
       return;
     }
 
+    const shouldShowSearch = this.isSearchOpen || Boolean(this.searchTerm);
+    this.searchContainer.classList.toggle("is-open", shouldShowSearch);
     this.searchClear.style.display = this.searchTerm ? "flex" : "none";
   }
 
@@ -1166,6 +1171,27 @@ class TOCExtension {
       button.disabled = searchActive;
       button.classList.toggle("is-disabled", searchActive);
     });
+
+    const searchButton = this.container.querySelector(
+      `#${CONSTANTS.IDS.TOC_SEARCH_TOGGLE_BTN}`,
+    );
+    if (searchButton) {
+      const searchActiveState = this.isSearchOpen || Boolean(this.searchTerm);
+      searchButton.classList.toggle("is-active", searchActiveState);
+      searchButton.title = searchActiveState ? "Close search" : "Open search";
+      searchButton.setAttribute(
+        "aria-label",
+        searchActiveState ? "Close search" : "Open search",
+      );
+    }
+
+    const pinButton = this.container.querySelector(`#${CONSTANTS.IDS.TOC_PIN_BTN}`);
+    if (pinButton) {
+      const label = this.isPinned ? "Unpin panel" : "Pin open panel";
+      pinButton.classList.toggle("is-active", this.isPinned);
+      pinButton.title = label;
+      pinButton.setAttribute("aria-label", label);
+    }
   }
 
   focusEditingInputIfNeeded() {
@@ -1196,6 +1222,23 @@ class TOCExtension {
     this.searchInput?.focus();
   }
 
+  toggleSearch() {
+    if (this.isSearchOpen || this.searchTerm) {
+      this.isSearchOpen = false;
+      this.searchTerm = "";
+      if (this.searchInput) {
+        this.searchInput.value = "";
+      }
+      this.render();
+      return;
+    }
+
+    this.isSearchOpen = true;
+    this.updateSearchControls();
+    this.updateHeaderActions();
+    this.searchInput?.focus();
+  }
+
   handleContentClick(event) {
     const actionElement = event.target.closest("[data-action]");
     if (!actionElement) {
@@ -1215,6 +1258,16 @@ class TOCExtension {
       this.editingGroupIndex = groupIndex;
       this.focusEditOnRender = true;
       this.render();
+      return;
+    }
+
+    if (action === "toggle-search") {
+      this.toggleSearch();
+      return;
+    }
+
+    if (action === "toggle-pin") {
+      this.togglePinned();
       return;
     }
 
@@ -1262,6 +1315,7 @@ class TOCExtension {
       return;
     }
 
+    this.expandPanel();
     this.collapsedGroups.clear();
     this.collapsedHeadings.clear();
     this.expandedHeadings = new Set(this.getDefaultCollapsedHeadingKeys());
@@ -1440,34 +1494,146 @@ class TOCExtension {
   }
 
   setupResponsiveCollapse() {
-    if (
-      window.innerWidth <= CONSTANTS.CONSTRAINTS.COLLAPSE_BREAKPOINT &&
-      this.container
-    ) {
-      this.container.classList.add(CONSTANTS.CLASSES.COLLAPSED);
+    if (!this.container) {
+      return;
     }
+
+    if (this.isPinned) {
+      this.expandPanel();
+      return;
+    }
+
+    this.collapsePanel();
   }
 
   applyInitialPosition() {
     if (!this.container) return;
 
     const savedPosition = PositionManager.getSavedPosition();
-    if (savedPosition) {
-      PositionManager.applyPosition(
-        this.container,
-        savedPosition.x,
-        savedPosition.y,
-      );
-      return;
-    }
-
     const rect = this.container.getBoundingClientRect();
-    PositionManager.applyPosition(this.container, rect.left, rect.top);
+    const startX = savedPosition?.x ?? rect.left;
+    const startY = savedPosition?.y ?? rect.top;
+    const constrained = PositionManager.constrainToViewport(
+      startX,
+      startY,
+      this.container.offsetWidth,
+      this.container.offsetHeight,
+    );
+
+    PositionManager.applyPosition(this.container, constrained.x, constrained.y);
+    PositionManager.savePosition(constrained.x, constrained.y);
   }
 
   getCurrentChatId() {
     const match = window.location.href.match(/\/c\/([^/?#]+)/);
     return match ? match[1] : null;
+  }
+
+  getPinnedState() {
+    return localStorage.getItem(CONSTANTS.STORAGE_KEY_PINNED) === "true";
+  }
+
+  savePinnedState() {
+    localStorage.setItem(CONSTANTS.STORAGE_KEY_PINNED, String(this.isPinned));
+  }
+
+  isPanelCollapsed() {
+    return this.container?.classList.contains(CONSTANTS.CLASSES.COLLAPSED);
+  }
+
+  expandPanel() {
+    window.clearTimeout(this.autoCollapseTimer);
+
+    if (!this.container || !this.dragManager || !this.isPanelCollapsed()) {
+      return;
+    }
+
+    this.dragManager.toggleCollapse(true);
+  }
+
+  collapsePanel() {
+    window.clearTimeout(this.autoCollapseTimer);
+
+    if (!this.container || !this.dragManager || this.isPanelCollapsed()) {
+      return;
+    }
+
+    this.dragManager.toggleCollapse(false);
+  }
+
+  scheduleAutoCollapse() {
+    if (this.isPinned) {
+      return;
+    }
+
+    window.clearTimeout(this.autoCollapseTimer);
+    this.autoCollapseTimer = window.setTimeout(() => {
+      if (
+        this.isPinned ||
+        !this.container ||
+        this.isPanelCollapsed() ||
+        this.dragManager?.isDragging ||
+        this.container.matches(":hover")
+      ) {
+        return;
+      }
+
+      this.collapsePanel();
+    }, CONSTANTS.DELAYS.HOVER_COLLAPSE);
+  }
+
+  handleMouseEnter() {
+    window.clearTimeout(this.autoCollapseTimer);
+
+    if (!this.isPinned) {
+      this.expandPanel();
+    }
+  }
+
+  handleMouseLeave() {
+    if (this.isPinned || this.editingGroupIndex !== null) {
+      return;
+    }
+
+    this.scheduleAutoCollapse();
+  }
+
+  handlePanelCollapseChange(isCollapsed) {
+    if (isCollapsed) {
+      window.clearTimeout(this.autoCollapseTimer);
+    }
+
+    this.updateHeaderActions();
+  }
+
+  handleDragEnd() {
+    if (!this.isPinned && this.container && !this.container.matches(":hover")) {
+      this.scheduleAutoCollapse();
+    }
+  }
+
+  handleToggleButtonPress(isCollapsed) {
+    if (!isCollapsed && this.isPinned) {
+      this.isPinned = false;
+      this.savePinnedState();
+      this.updateHeaderActions();
+    }
+
+    window.clearTimeout(this.autoCollapseTimer);
+    return true;
+  }
+
+  togglePinned() {
+    this.isPinned = !this.isPinned;
+    this.savePinnedState();
+
+    if (this.isPinned) {
+      this.expandPanel();
+    } else if (!this.container?.matches(":hover")) {
+      this.scheduleAutoCollapse();
+    }
+
+    this.updateHeaderActions();
   }
 }
 
